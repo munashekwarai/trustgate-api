@@ -19,12 +19,17 @@ A secure reference API combines password hashing, rotating refresh tokens, RBAC,
 
 ## Architecture
 ```mermaid
-flowchart LR
-  Input[Validated input] --> Core[Domain engine]
-  Core --> Store[(Durable store)]
-  CLI[CLI] --> Core
-  API[REST API] --> Core
-  Core --> Evidence[Results and evidence]
+flowchart TB
+  Client[API client] --> Headers[Secure-header middleware]
+  Headers --> Limit[Rate and login guard]
+  Limit --> Auth[Registration / login]
+  Auth --> Password[scrypt password verifier]
+  Auth --> Access[Signed short-lived access token]
+  Auth --> Refresh[Hashed rotating refresh token]
+  Access --> RBAC[Role permission check]
+  RBAC --> Owner[Resource ownership check]
+  Owner --> Resource[Protected resource]
+  Auth & RBAC & Owner --> Audit[(Append-only audit events)]
 ```
 See [architecture](docs/architecture.md).
 
