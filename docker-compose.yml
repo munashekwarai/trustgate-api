@@ -1,0 +1,39 @@
+services:
+  api:
+    build: .
+    ports: ["127.0.0.1:3000:3000"]
+    environment:
+      DATABASE_URL: postgresql://trustgate@database:5432/trustgate
+      TOKEN_SECRET_FILE: /run/secrets/token_secret
+      HOST: 0.0.0.0
+    secrets: [token_secret]
+    networks: [application, data]
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      database: {condition: service_healthy}
+  database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: trustgate
+      POSTGRES_USER: trustgate
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes:
+      - trustgate_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    networks: [data]
+    healthcheck:
+      test: ["CMD-SHELL","pg_isready -U trustgate -d trustgate"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+networks:
+  application: {}
+  data: {internal: true}
+secrets:
+  token_secret: {file: ./.secrets/token_secret}
+  db_password: {file: ./.secrets/db_password}
+volumes:
+  trustgate_data: {}

@@ -1,3 +1,3 @@
 # Contributing
 
-Use a focused branch, explain the operational problem, add or update tests, run the documented checks, and submit a reviewable change. Security reports belong in the private process described in `SECURITY.md`, not public issues.
+Open a focused change explaining the security decision it affects. Run `npm ci`, `npm run typecheck`, `npm test`, `npm run build`, and `npm audit --audit-level=high`. Add both success and denial tests for authorization, token, or validation changes. Never commit `.env`, `.secrets`, credentials, tokens, production identities, or personal audit data.

@@ -1,36 +1,35 @@
 # TrustGate Architecture
 
-## System context
+## Request path
 
-TrustGate treats identity as a sequence of security decisions. Requests first cross header and abuse-control middleware. Login uses salted scrypt hashes and produces short-lived signed access tokens plus server-tracked refresh tokens. Refresh rotation invalidates the preceding token to detect replay. Protected operations pass both role permission and resource ownership checks, while authentication and authorization outcomes produce audit evidence.
-
-## Component diagram
+Every request crosses Fastify's body limit, security headers, and rate limiter before strict schema validation. Authentication establishes a principal from a signed token. Authorization then checks an explicit role permission and, for `:own` permissions, the resource owner. These are independent decisions. Outcomes that affect identity or protected evidence are appended to the audit store.
 
 ```mermaid
-flowchart TB
-  Client[API client] --> Headers[Secure-header middleware]
-  Headers --> Limit[Rate and login guard]
-  Limit --> Auth[Registration / login]
-  Auth --> Password[scrypt password verifier]
-  Auth --> Access[Signed short-lived access token]
-  Auth --> Refresh[Hashed rotating refresh token]
-  Access --> RBAC[Role permission check]
-  RBAC --> Owner[Resource ownership check]
-  Owner --> Resource[Protected resource]
-  Auth & RBAC & Owner --> Audit[(Append-only audit events)]
+sequenceDiagram
+ participant C as Client
+ participant A as Fastify adapter
+ participant S as Auth service
+ participant P as PostgreSQL
+ participant T as Token service
+ C->>A: login credentials
+ A->>A: rate limit + strict validation
+ A->>S: normalized email, password, source IP
+ S->>P: user and lock state
+ S->>S: constant-time scrypt verification
+ S->>P: reset/increment failures + audit
+ S->>T: signed access + random refresh
+ T->>P: hashed refresh session
+ S-->>C: tokens or generic error
 ```
 
-## Data and control flow
+## Token lifecycle
 
-The solid arrows show runtime data or control flow. Dotted arrows, where present, describe policy rather than runtime connectivity. Domain decisions remain independent of CLI and HTTP delivery so they can be tested without binding sockets or paid services. Inputs are validated before persistence or outbound I/O, and evidence is retained at the point where the system makes an operational decision.
+Access JWTs last 15 minutes and bind issuer, audience, subject, role, expiry, and JTI under HS256. A refresh token is 256 random bits; only its SHA-256 hash is stored. Rotation atomically consumes the current row and inserts its replacement in the same family. Reusing a consumed token revokes every live token in that family.
 
-## Trust boundaries
+## Persistence
 
-1. **External input boundary:** network targets, telemetry, identity requests, documents, logs, or field records are untrusted.
-2. **Domain boundary:** validated values enter deterministic policy and state-transition logic.
-3. **Persistence boundary:** parameterized or structured writes protect stored operational evidence.
-4. **Operator boundary:** alerts, conflict choices, infrastructure deployment, and other consequential actions remain explicit operator responsibilities.
+PostgreSQL stores users, refresh sessions, and append-oriented audit events. Email uniqueness is case-insensitive. Foreign keys remove sessions with users while preserving audit records through nullable actor references. Refresh family and audit time indexes serve incident response paths. The in-memory adapter implements the same interface only for deterministic tests.
 
-## Failure behavior
+## Authorization model
 
-Adapters return explicit errors or states rather than manufacturing successful results. Timeouts and unavailable dependencies affect only the relevant operation. The limitations documented in the README define what cannot be inferred from the available evidence.
+`ADMIN` has all reference permissions. `MANAGER` can read users and write owned records. `USER` is limited to owned reads/writes. `AUDITOR` reads audit evidence. Possessing a role is insufficient for `:own` operations: the authenticated subject must equal the resource owner.

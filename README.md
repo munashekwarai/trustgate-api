@@ -1,70 +1,124 @@
-# TrustGate
+# TrustGate API
 
 **Cybersecurity · Backend Engineering · Identity**
 
+TrustGate is a secure API reference showing how authentication, authorization, token lifecycle, abuse controls, and audit evidence work together.
+
 ## Problem
-Applications frequently authenticate users without enforcing resource authorization, token lifecycle, or abuse controls.
+
+Many applications stop at username-and-password login. They do not consistently enforce roles, permissions, ownership, refresh-token replay protection, brute-force controls, request validation, rate limits, or audit evidence. A valid login then becomes a path to resources the user should never reach.
 
 ## Who This Helps
-Backend teams building multi-role APIs.
+
+Backend and platform engineers designing multi-role APIs for internal systems, SaaS products, regulated workflows, or any application where resource ownership and privileged actions matter.
 
 ## Why It Matters
-Broken access control, replayable tokens, brute force, and missing audit evidence expose sensitive resources.
+
+Broken access control can expose another user's data or administrative operations. Reusable refresh tokens extend token theft. Unbounded login attempts enable credential stuffing. Missing audit trails make investigation and accountability difficult.
 
 ## Constraints
-The system must be inexpensive, inspectable, testable without paid services, conservative about claims, and safe with untrusted input. SQLite/local execution is the default; production deployments need deliberate persistence, identity, networking, and backup choices.
+
+The service must use PostgreSQL, run locally without a commercial identity provider, keep security decisions testable, avoid secrets in source, and remain honest: it is a reference system rather than a certified identity product.
 
 ## Solution
-A secure reference API combines password hashing, rotating refresh tokens, RBAC, ownership checks, lockout, rate limits, validation, and audit events.
+
+Registration stores salted scrypt password hashes. Login uses generic errors, timing-resistant verification, persistent failure counters, temporary lockout, global and route rate limits, short-lived signed access tokens, and hashed refresh sessions. Refresh tokens rotate atomically; replay revokes the token family. Role permissions and ownership are separate decisions. Sensitive outcomes produce structured PostgreSQL audit events.
 
 ## Architecture
+
 ```mermaid
 flowchart TB
-  Client[API client] --> Headers[Secure-header middleware]
-  Headers --> Limit[Rate and login guard]
-  Limit --> Auth[Registration / login]
-  Auth --> Password[scrypt password verifier]
-  Auth --> Access[Signed short-lived access token]
-  Auth --> Refresh[Hashed rotating refresh token]
-  Access --> RBAC[Role permission check]
-  RBAC --> Owner[Resource ownership check]
-  Owner --> Resource[Protected resource]
-  Auth & RBAC & Owner --> Audit[(Append-only audit events)]
+ Client --> Headers[Helmet security headers]
+ Headers --> Rate[Global + login rate limits]
+ Rate --> Validate[Strict Zod validation]
+ Validate --> Auth[Registration / login]
+ Auth --> Password[scrypt password hashes]
+ Auth --> Access[Signed 15-minute access JWT]
+ Auth --> Refresh[Hashed rotating refresh sessions]
+ Access --> RBAC[Role permission]
+ RBAC --> Owner[Resource ownership]
+ Owner --> Resource[Protected resource]
+ Auth & RBAC & Owner --> Audit[(PostgreSQL audit events)]
+ Refresh --> Replay[Replay detection + family revocation]
 ```
-See [architecture](docs/architecture.md).
 
-## Features
-The repository implements its domain engine, validation, durable/local state where applicable, executable interfaces, meaningful tests, structured errors, and automation.
+See [architecture](docs/architecture.md), [security](docs/security.md), and the detailed [threat model](docs/threat-model.md).
+
+## Implemented Features
+
+- Registration and login with normalized unique email addresses.
+- Salted Node.js scrypt password hashing and constant-time comparison.
+- Password length and composition policy.
+- HS256 access JWTs with issuer, audience, expiry, subject, role, and unique token ID validation.
+- Random refresh tokens stored only as SHA-256 hashes.
+- Transactional refresh rotation, reuse detection, and token-family revocation.
+- Roles: `ADMIN`, `MANAGER`, `USER`, and `AUDITOR`.
+- Explicit permission matrix and ownership checks.
+- Persistent failed-attempt counters and timed account lockout.
+- Global and login-specific rate limiting.
+- Helmet security headers, 16 KiB body limit, strict Zod schemas, and structured errors with request IDs.
+- Structured security audit events including source IP, action, subject, outcome, metadata, and timestamp.
+- PostgreSQL schema with enums, foreign keys, checks, and operational indexes.
+- In-memory store for deterministic security tests; PostgreSQL store for runtime.
 
 ## Technology Stack
-Python 3.11 provides a portable typed core; FastAPI provides OpenAPI-backed HTTP endpoints; Typer provides operator-friendly commands; SQLite provides a zero-service evidence store. CloudForge instead uses Terraform, Docker, NGINX, and shell-based verification.
+
+TypeScript strict mode makes identity and permission contracts explicit. Fastify provides bounded high-performance HTTP delivery and request IDs. Zod validates external data. `jose` signs and verifies standards-based JWTs. Node's built-in scrypt and cryptographic random generator minimize password/token dependencies. PostgreSQL provides transactional refresh rotation and durable audits.
 
 ## Setup
+
 ```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -e '.[dev]'
+npm ci
+cp .env.example .env
+npm run typecheck
+npm test
+npm run build
 ```
-Copy `.env.example` to `.env` only for local overrides; `.env` is ignored.
+
+Create PostgreSQL and apply `migrations/001_initial.sql`, then generate a secret:
+
+```bash
+export TOKEN_SECRET="$(openssl rand -base64 48)"
+export DATABASE_URL='postgresql://trustgate:password@127.0.0.1:5432/trustgate'
+npm run build
+npm start
+```
 
 ## Usage
+
 ```bash
-python -m app.cli --help
-uvicorn app.api:app --host 127.0.0.1 --port 8000
+curl -X POST http://127.0.0.1:3000/auth/register -H 'content-type: application/json' \
+  -d '{"email":"user@example.com","password":"CorrectHorse9Battery"}'
+curl -X POST http://127.0.0.1:3000/auth/login -H 'content-type: application/json' \
+  -d '{"email":"user@example.com","password":"CorrectHorse9Battery"}'
+curl http://127.0.0.1:3000/me -H "authorization: Bearer $ACCESS_TOKEN"
 ```
-CloudForge users should follow `docs/deployment.md`.
+
+For Compose, create untracked `.secrets/token_secret` and `.secrets/db_password`, then run `docker compose up --build`.
 
 ## Testing
+
 ```bash
-pytest -q
+npm run typecheck
+npm test
+npm run build
+npm audit --audit-level=high
 ```
-Tests exercise domain behavior and failure paths without paid infrastructure.
+
+Tests prove password salting, constant-time verification behavior, RBAC plus ownership, JWT claim validation, refresh replay revocation, lockout, audit evidence, registration/login/profile flow, forbidden audit access, and structured validation errors.
 
 ## Security
-Inputs are bounded and validated, secrets are accepted through the environment rather than source, errors avoid sensitive internals, and CI runs tests. See [security](docs/security.md) and [threat model](docs/threat-model.md).
+
+Keep access tokens in memory where possible and refresh tokens in secure, HTTP-only, same-site cookies in browser deployments. The JSON refresh endpoint exists to keep clients provider-neutral; never persist raw tokens in logs or a database. Rotate `TOKEN_SECRET` with a deliberate multi-key migration strategy. Deploy behind TLS, configure trusted proxy handling explicitly, and restrict database networking.
 
 ## Limitations
-It is a reference implementation, not an identity provider or a substitute for an external security review.
+
+- No email verification, MFA, password reset, SSO/OIDC provider, device management, or key-management service.
+- HS256 is appropriate for a single trust domain; multi-service verification should use managed asymmetric keys and rotation.
+- In-process rate limits do not coordinate across replicas without a shared backend.
+- The initial SQL migration is for a new database; production schema changes need a migration tool and rollback plan.
+- This reference does not replace a security assessment or managed identity platform.
 
 ## Contributing
-Read [CONTRIBUTING.md](CONTRIBUTING.md), add tests for behavior changes, and avoid real personal or secret data in fixtures.
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md). Every security behavior change requires a negative test as well as a success case.
